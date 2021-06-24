@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/rand"
-	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
@@ -115,8 +114,10 @@ func main() {
 	flag.Parse()
 
 	// Slow down GC.
+	// 设置gc回收百分比
 	debug.SetGCPercent(500)
 
+	// 计算总的发包数量
 	NumPubs = int(TestDuration/time.Second) * TargetPubRate
 
 	if MsgSize < 8 {
@@ -171,16 +172,13 @@ func main() {
 	subject := nats.NewInbox()
 
 	// Count the messages.
-	received := 0
+	var received int32 = 0
+	// fail count
+	var failCnt int32 = 0
 
 	// Async Subscriber (Runs in its own Goroutine)
 	c2.Subscribe(subject, func(msg *nats.Msg) {
-		sendTime := int64(binary.LittleEndian.Uint64(msg.Data))
-		durations = append(durations, time.Duration(time.Now().UnixNano()-sendTime))
-		received++
-		if received >= NumPubs {
-			wg.Done()
-		}
+		msg.Respond([]byte(""))
 	})
 	// Make sure interest is set for subscribe before publish since a different connection.
 	c2.Flush()
@@ -224,9 +222,17 @@ func main() {
 	// Now publish
 	for i := 0; i < NumPubs; i++ {
 		now := time.Now()
-		// Place the send time in the front of the payload.
-		binary.LittleEndian.PutUint64(data[0:], uint64(now.UnixNano()))
-		c1.Publish(subject, data)
+		go func(now time.Time) {
+			_, err = c1.Request(subject, data, time.Second)
+			if err != nil {
+				atomic.AddInt32(&failCnt, 1)
+			}
+			durations = append(durations, time.Duration(time.Now().UnixNano()-now.UnixNano()))
+			atomic.AddInt32(&received, 1)
+			if int(atomic.LoadInt32(&received)) >= NumPubs {
+				wg.Done()
+			}
+		}(now)
 		adjustAndSleep(now, i+1)
 	}
 	pubDur := time.Since(pubStart)
@@ -275,6 +281,9 @@ func main() {
 	log.Printf("1st Sent Wall Time : %v", fmtDur(pubStart.Sub(start)))
 	log.Printf("Last Sent Wall Time: %v", fmtDur(pubDur))
 	log.Printf("Last Recv Wall Time: %v", fmtDur(subDur))
+
+	log.Printf("fail count: %d\n", failCnt)
+	log.Printf("fail percent: %d%% \n", (int(failCnt)/NumPubs)*100)
 }
 
 const fsecs = float64(time.Second)
