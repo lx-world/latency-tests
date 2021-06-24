@@ -184,6 +184,7 @@ func main() {
 	c2.Flush()
 
 	// wait for routes to be established so we get every message
+	// 测试nats服务器，防止丢前期消息, 单机可以注释掉
 	waitForRoute(c1, c2)
 
 	log.Printf("Message Payload: %v\n", byteSize(MsgSize))
